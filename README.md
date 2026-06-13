@@ -30,7 +30,8 @@ Drive a flow with ordered actions (each one captures the resulting screen):
       --do "swipe=up"
 
 Actions: `tap-id=`, `tap-text=`, `tap=x,y`, `swipe=up|down|left|right`,
-`scroll-to=<text>`, `back`, `key=<code>`. Files land in `captures/`.
+`scroll=down|up` (scroll to the end, one viewport per step), `scroll-to=<text>`,
+`back`, `key=<code>`. Files land in `captures/`.
 
     ./droidshot.py annotate captures/foo.droidshot   # recompute scroll metadata
 

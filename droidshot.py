@@ -413,11 +413,10 @@ def perform_action(serial: str, kind: str, val: str | None, prev_xml: str | None
         adb(["shell", "input", "tap", str(x), str(y)], serial=serial)
         return {"type": "tap", "x": x, "y": y, "elementId": None, "bounds": None}
     if kind in ("tap-id", "tap-text"):
-        if not prev_xml:
-            sys.exit(f"{kind}: no hierarchy available to resolve '{val}'")
-        el = find_element(prev_xml, "id" if kind == "tap-id" else "text", val or "")
+        el = find_element(prev_xml, "id" if kind == "tap-id" else "text", val or "") if prev_xml else None
         if not el:
-            sys.exit(f"{kind}: no element matching '{val}'")
+            print(f"  (skip {kind}={val}: not found on this screen)")
+            return None  # non-fatal: skip this step, stay on the current screen
         adb(["shell", "input", "tap", str(el["cx"]), str(el["cy"])], serial=serial)
         return {"type": "tap", "x": el["cx"], "y": el["cy"], "elementId": el["rid"], "bounds": el["bounds"]}
     if kind == "swipe":
@@ -592,23 +591,41 @@ def cmd_capture(args) -> None:
     nodes: list[dict] = []
     edges: list[dict] = []
     disp = meta["display"]
-    idx = 0  # index of the most recently added node
+    idx = 0          # highest node index allocated
+    cur_id = "n0"    # the node we're currently "on"
+    registry: list[tuple[str, str | None, bytes]] = []  # (id, activity, png) for dedup
 
-    def add_node_edge(action: dict, png: bytes, xml: str | None, activity: str | None,
-                      source: str | None, label: str):
-        nonlocal idx
-        prev = f"n{idx}"
+    def find_dup(png: bytes, activity: str | None) -> str | None:
+        for nid, act, p in registry:
+            if act == activity and frames_equivalent(png, p):
+                return nid
+        return None
+
+    def add(action: dict, png: bytes, xml: str | None, activity: str | None,
+            source: str | None, label: str):
+        # if this screen matches one already captured (e.g. back to Home), reuse
+        # that node so the flow BRANCHES instead of duplicating the screen
+        nonlocal idx, cur_id
+        dup = find_dup(png, activity)
+        if dup and dup != cur_id:
+            edges.append({"from": cur_id, "to": dup, "action": action, "transition": None})
+            print(f"  ↩  {label}  ->  {activity}  (revisit {dup})")
+            cur_id = dup
+            return
         idx += 1
-        cur = f"n{idx}"
-        nodes.append(build_node(cur, png, xml, activity, source, assets))
-        edges.append({"from": prev, "to": cur, "action": action, "transition": None})
-        print(f"  {cur}  {label}  ->  {activity}  [{source or 'no-hierarchy'}]")
+        nid = f"n{idx}"
+        nodes.append(build_node(nid, png, xml, activity, source, assets))
+        registry.append((nid, activity, png))
+        edges.append({"from": cur_id, "to": nid, "action": action, "transition": None})
+        print(f"  {nid}  {label}  ->  {activity}  [{source or 'no-hierarchy'}]")
+        cur_id = nid
 
     try:
         if args.reset:
             reset_scroll(serial, disp, args.settle)
         png, xml, activity, source = snapshot(serial, args.settle)
         nodes.append(build_node("n0", png, xml, activity, source, assets))
+        registry.append(("n0", activity, png))
         print(f"  n0  {activity}  [{source or 'no-hierarchy'}]")
 
         for kind, val in steps:
@@ -621,18 +638,31 @@ def cmd_capture(args) -> None:
                     prev_png = png
                     action = perform_action(serial, "swipe", "up", xml, disp)
                     png, xml, activity, source = snapshot(serial, args.settle)
-                    # tolerant compare: stops at the bottom even with no hierarchy
-                    # (live-updating screens) and ignores a ticking counter
-                    if frames_equivalent(prev_png, png):
+                    if frames_equivalent(prev_png, png):  # didn't move -> bottom
                         print(f"      (reached end; '{target}' not found)")
                         break
-                    add_node_edge(action, png, xml, activity, source, f"scroll-to={target} (swipe up)")
+                    add(action, png, xml, activity, source, f"scroll-to={target} (swipe up)")
                     tries += 1
                 continue
-            # single-step action
+            if kind == "scroll":
+                # scroll all the way: keep going until two consecutive frames are
+                # identical (the real bottom), capped at --max-scroll
+                swdir = "down" if val == "up" else "up"  # scroll=down -> swipe up
+                tries = 0
+                while tries < args.max_scroll:
+                    prev_png = png
+                    action = perform_action(serial, "swipe", swdir, xml, disp)
+                    png, xml, activity, source = snapshot(serial, args.settle)
+                    if frames_equivalent(prev_png, png):
+                        break  # nothing new -> end of the list
+                    add(action, png, xml, activity, source, f"scroll {val or 'down'}")
+                    tries += 1
+                continue
             action = perform_action(serial, kind, val, xml, disp)
+            if action is None:  # tap target not found — skip, stay on this screen
+                continue
             png, xml, activity, source = snapshot(serial, args.settle)
-            add_node_edge(action, png, xml, activity, source, f"{kind}{('=' + val) if val else ''}")
+            add(action, png, xml, activity, source, f"{kind}{('=' + val) if val else ''}")
     finally:
         if not args.no_wake:
             restore_awake(serial, awake_state)
@@ -707,8 +737,8 @@ def main() -> None:
                        help="seconds between stability-check frames (default 0.4)")
     p_cap.add_argument("--reset", action="store_true",
                        help="scroll to the top before capturing n0")
-    p_cap.add_argument("--max-scroll", type=int, default=12,
-                       help="max swipes for a scroll-to step (default 12)")
+    p_cap.add_argument("--max-scroll", type=int, default=20,
+                       help="max swipes for a scroll / scroll-to step (default 20)")
     p_cap.add_argument("--no-wake", action="store_true", help="don't wake/keep-awake the device")
     p_cap.set_defaults(func=cmd_capture)
 

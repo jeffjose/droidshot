@@ -25,7 +25,7 @@
     const vof = (id: string) => ds!.manifest.nodes.find((n) => n.id === id)?.scroll?.chain ?? id;
     const cv = vof(currentId);
     const e = ds.manifest.edges.find(
-      (e) => e.action.type !== 'swipe' && vof(e.to) === cv && vof(e.from) !== cv
+      (e) => e.action.type === 'tap' && vof(e.to) === cv && vof(e.from) !== cv
     );
     return e?.from ?? null;
   });
@@ -35,7 +35,7 @@
     ds?.manifest.edges.find((e) => e.to === currentId && e.action.type === 'swipe')?.from ?? null
   );
   // non-swipe/non-tap edges shown as buttons (key, captured back); taps are hotspots
-  const barEdges = $derived(outEdges.filter((e) => e.action.type !== 'swipe' && e.action.type !== 'tap'));
+  const barEdges = $derived(outEdges.filter((e) => e.action.type === 'key'));
 
   // scrollbar: current node's position within its scroll chain
   const sc = $derived(node?.scroll ?? null);
@@ -49,6 +49,7 @@
   const chainIdx = $derived(chainNodes.findIndex((n) => n.id === currentId));
 
   const deviceW = $derived(ds?.manifest.device.display.w ?? 1080);
+  const aspect = $derived(deviceW / (ds?.manifest.device.display.h ?? 2400)); // w/h
   const scale = $derived(imgW > 0 ? imgW / deviceW : 0);
   const shotUrl = $derived(ds && node ? assetUrl(ds, node.screenshot) : '');
   const hier = $derived.by(() => {
@@ -97,12 +98,15 @@
     return act.split('/').pop()?.split('.').pop()?.replace(/Activity$/, '') || 'screen';
   }
   function drillLabel(e: Edge): string {
-    // human name for a drill-in = the text at the tap location in the source screen
+    // human name for a drill-in = the text at the tap location in the source screen.
+    // prefer the actual tapped point (x,y) — bounds is the whole row, whose centre
+    // can miss the title text.
     const src = nodeById(e.from);
+    const a = e.action as any;
     const b = e.action.bounds;
-    if (ds && src?.hierarchy && b) {
-      const cx = (b[0] + b[2]) / 2,
-        cy = (b[1] + b[3]) / 2;
+    if (ds && src?.hierarchy && (a.x != null || b)) {
+      const cx = a.x ?? (b[0] + b[2]) / 2,
+        cy = a.y ?? (b[1] + b[3]) / 2;
       const hits = parseHierarchy(assetText(ds, src.hierarchy)).filter(
         (n) => n.text && n.bounds[0] <= cx && cx <= n.bounds[2] && n.bounds[1] <= cy && cy <= n.bounds[3]
       );
@@ -119,7 +123,8 @@
   const viewTree = $derived.by(() => {
     if (!ds) return [] as { view: string; depth: number; edge: Edge | null }[];
     const vof = (id: string) => ds!.manifest.nodes.find((n) => n.id === id)?.scroll?.chain ?? id;
-    const drills = ds.manifest.edges.filter((e) => e.action.type !== 'swipe' && vof(e.from) !== vof(e.to));
+    // only taps drill into a new screen; back/key are navigation, not structure
+    const drills = ds.manifest.edges.filter((e) => e.action.type === 'tap' && vof(e.from) !== vof(e.to));
     const incoming = new Set(drills.map((e) => vof(e.to)));
     const allViews: string[] = [];
     for (const n of ds.manifest.nodes) {
@@ -272,7 +277,9 @@
             <button class="scroll-btn" disabled={!parentId} onclick={flowBack}
               title="back (up the captured flow)" aria-label="back">←</button>
           </div>
-          <div class="phone" style="width: min(400px, 84vw)" class:xray onwheel={onWheel}>
+          <div class="phone"
+            style="--ar:{aspect}; width: min(400px, 84vw, calc((100vh - 150px) * var(--ar)))"
+            class:xray onwheel={onWheel}>
             <img src={shotUrl} alt="screen {node.id}" bind:clientWidth={imgW} />
 
             {#if scale > 0}
