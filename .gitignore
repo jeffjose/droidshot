@@ -1,0 +1,14 @@
+# vendored adb (re-fetch with: ./droidshot.py setup)
+vendor/
+
+# capture artifacts (.droidshot files)
+captures/
+
+# python
+__pycache__/
+*.pyc
+
+# viewer
+viewer/node_modules/
+viewer/.svelte-kit/
+viewer/build/
