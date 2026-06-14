@@ -24,12 +24,33 @@ export interface ScrollInfo {
   chain: string; // id of the chain's first node
 }
 
+/** Stitch metadata when `screenshot` is a full-page (scroll-stitched) image. */
+export interface LongshotMeta {
+  viewport: [number, number]; // single-viewport size in device px
+  topChrome: number;
+  bottomChrome: number;
+  stitchedSize: [number, number]; // [w, h] of the stitched PNG
+  seams: { frame: number; y: number; h: number }[];
+}
+
+/** A collapsing toolbar: the fat title (baked into the stitched top) morphs into
+ * a skinny app bar as you scroll. The viewer crossfades `skinny` in by opacity. */
+export interface HeaderMorph {
+  skinny: string; // asset path of the collapsed status+app-bar crop
+  skinnyH: number; // device px
+  fatH: number; // device px (bottom of the fat header / top of the content list)
+  collapsePx: number; // scroll distance (device px) over which it collapses
+}
+
 export interface ScreenNode {
   id: string;
-  screenshot: string;
+  screenshot: string; // a single viewport, OR a tall stitched page if `longshot` is set
   hierarchy: string | null;
   hierarchySource?: 'uiautomator' | 'viewtree' | null;
   scroll?: ScrollInfo;
+  viewport?: [number, number]; // single-viewport size in device px (v2+)
+  longshot?: LongshotMeta | null; // present & non-null when screenshot is stitched (v2+)
+  header?: HeaderMorph | null; // collapsing-header crossfade data (v2+)
   activity: string | null;
   capturedAt: string;
 }
@@ -59,7 +80,7 @@ export interface Manifest {
   edges: Edge[];
 }
 
-export const SUPPORTED_FORMAT_VERSION = 1;
+export const SUPPORTED_FORMAT_VERSION = 2;
 
 export interface Droidshot {
   manifest: Manifest;

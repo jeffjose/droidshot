@@ -8,9 +8,11 @@
     type HierNode,
     type Edge
   } from '$lib/droidshot';
+  import Graph from '$lib/Graph.svelte';
 
   let ds = $state<Droidshot | null>(null);
   let error = $state<string | null>(null);
+  let view = $state<'detail' | 'graph'>('detail');
   let currentId = $state('n0');
   let xray = $state(false);
   let hovered = $state<HierNode | null>(null);
@@ -186,12 +188,17 @@
     (ev.target as HTMLElement).setPointerCapture?.(ev.pointerId);
   }
   function onDragMove(ev: PointerEvent) {
+    if (nDragging) {
+      nTrackTo(ev.clientY);
+      return;
+    }
     if (!dragging) return;
     const id = nearestInChain(ev.clientY);
     if (id) currentId = id;
   }
   function endDrag() {
     dragging = false;
+    nDragging = false;
   }
   function gutterClick(ev: PointerEvent) {
     if (!sc || !trackEl) return;
@@ -207,6 +214,7 @@
   }
   let lastWheel = 0;
   function onWheel(ev: WheelEvent) {
+    if (!hasChain) return; // v2 stitched node: let the container scroll natively
     if (!scrollDown && !scrollUp) return; // not scrollable here — let the page scroll
     ev.preventDefault();
     const now = performance.now();
@@ -214,6 +222,55 @@
     if (ev.deltaY > 4 && scrollDown) (navigate(scrollDown), (lastWheel = now));
     else if (ev.deltaY < -4 && scrollUp) (navigate(scrollUp), (lastWheel = now));
   }
+
+  // --- native scroll: a v2 node's screenshot is a tall stitched page, scrolled
+  // inside the phone box (scrollbar + ▲▼ drive scrollTop). Legacy v1 captures use
+  // the node-chain path above instead. ---
+  const hasChain = $derived(!!sc); // node.scroll present => legacy viewport chain
+  let phoneEl = $state<HTMLDivElement>();
+  let scrollTop = $state(0);
+  let scrollH = $state(0);
+  let clientH = $state(0);
+  let nDragging = $state(false);
+  function measure() {
+    if (!phoneEl) return;
+    scrollTop = phoneEl.scrollTop;
+    scrollH = phoneEl.scrollHeight;
+    clientH = phoneEl.clientHeight;
+  }
+  const scrollable = $derived(scrollH > clientH + 1);
+  const canUp = $derived(scrollable && scrollTop > 1);
+  const canDown = $derived(scrollable && scrollTop < scrollH - clientH - 1);
+
+  // collapsing-header crossfade: a pinned skinny app bar fades in as the fat
+  // header (baked into the stitched top) scrolls away. Opacity rides scrollTop.
+  const headerUrl = $derived(ds && node?.header ? assetUrl(ds, node.header.skinny) : '');
+  const headerOpacity = $derived(
+    node?.header && scale > 0
+      ? Math.min(1, Math.max(0, scrollTop / (node.header.collapsePx * scale)))
+      : 0
+  );
+  function pageBy(dir: number) {
+    phoneEl?.scrollBy({ top: dir * (phoneEl.clientHeight * 0.9), behavior: 'smooth' });
+  }
+  function nThumbDown(ev: PointerEvent) {
+    ev.preventDefault();
+    ev.stopPropagation();
+    nDragging = true;
+    (ev.target as HTMLElement).setPointerCapture?.(ev.pointerId);
+  }
+  function nTrackTo(clientY: number) {
+    if (!trackEl || !phoneEl) return;
+    const r = trackEl.getBoundingClientRect();
+    const frac = Math.min(1, Math.max(0, (clientY - r.top) / r.height));
+    phoneEl.scrollTop = frac * (scrollH - clientH);
+  }
+  // re-measure and reset to top whenever the displayed screen changes
+  $effect(() => {
+    shotUrl; // track
+    if (phoneEl) phoneEl.scrollTop = 0;
+    requestAnimationFrame(measure);
+  });
 
   async function load(file: File) {
     error = null;
@@ -246,8 +303,15 @@
       open .droidshot
       <input type="file" accept=".droidshot,application/zip" onchange={onPick} hidden />
     </label>
+    <a class="navlink" href="/longshot">longshot ›</a>
     {#if ds}
-      <label class="toggle"><input type="checkbox" bind:checked={xray} /> x-ray</label>
+      <div class="viewtabs">
+        <button class:on={view === 'detail'} onclick={() => (view = 'detail')}>detail</button>
+        <button class:on={view === 'graph'} onclick={() => (view = 'graph')}>graph</button>
+      </div>
+      {#if view === 'detail'}
+        <label class="toggle"><input type="checkbox" bind:checked={xray} /> x-ray</label>
+      {/if}
     {/if}
   </header>
 
@@ -255,6 +319,8 @@
 
   {#if !ds}
     <div class="dropzone"><p>Drag a <code>.droidshot</code> here, or use “open”.</p></div>
+  {:else if view === 'graph'}
+    <Graph {ds} {currentId} onpick={(id) => { currentId = id; view = 'detail'; }} />
   {:else if node}
     <div class="layout">
       <!-- left: flow tree (file-explorer style) -->
@@ -277,10 +343,16 @@
             <button class="scroll-btn" disabled={!parentId} onclick={flowBack}
               title="back (up the captured flow)" aria-label="back">←</button>
           </div>
-          <div class="phone"
+          <div class="phone" bind:this={phoneEl}
             style="--ar:{aspect}; width: min(400px, 84vw, calc((100vh - 150px) * var(--ar)))"
-            class:xray onwheel={onWheel}>
-            <img src={shotUrl} alt="screen {node.id}" bind:clientWidth={imgW} />
+            class:xray onwheel={onWheel} onscroll={measure}>
+            {#if headerUrl && node.header}
+              <div class="pinhead" style="opacity:{headerOpacity}" aria-hidden="true">
+                <img src={headerUrl} alt="" />
+              </div>
+            {/if}
+            <div class="content">
+            <img src={shotUrl} alt="screen {node.id}" bind:clientWidth={imgW} onload={measure} />
 
             {#if scale > 0}
               <div class="overlay">
@@ -332,26 +404,50 @@
                 {/each}
               </div>
             {/if}
+            </div><!-- /content -->
           </div>
 
           <div class="scrollers">
-            <button class="scroll-btn" disabled={!scrollUp}
-              onclick={() => scrollUp && navigate(scrollUp)} title="scroll up" aria-label="scroll up">▲</button>
-            <div class="track" class:on={!!sc} bind:this={trackEl} onpointerdown={gutterClick}
-              role="presentation" title={sc ? `y ${sc.y} / ${sc.content}px` : 'no scroll data'}>
-              {#if sc}
-                {#each chainNodes as n}
-                  <div class="tick" class:cur={n.id === currentId}
-                    style="top:{(100 * (n.scroll!.y ?? 0)) / sc.content}%"></div>
-                {/each}
-                <div class="thumb" class:dragging
-                  style="top:{(100 * sc.y) / sc.content}%; height:{Math.max(7, (100 * sc.viewport) / sc.content)}%"
-                  onpointerdown={startDrag} role="slider" tabindex="0"
-                  aria-valuenow={sc.y} aria-valuemax={sc.content} aria-label="scroll position"></div>
-              {/if}
-            </div>
-            <button class="scroll-btn" disabled={!scrollDown}
-              onclick={() => scrollDown && navigate(scrollDown)} title="scroll down" aria-label="scroll down">▼</button>
+            {#if hasChain}
+              <!-- legacy v1: step between captured viewport-nodes -->
+              <button class="scroll-btn" disabled={!scrollUp}
+                onclick={() => scrollUp && navigate(scrollUp)} title="scroll up" aria-label="scroll up">▲</button>
+              <div class="track" class:on={!!sc} bind:this={trackEl} onpointerdown={gutterClick}
+                role="presentation" title={sc ? `y ${sc.y} / ${sc.content}px` : 'no scroll data'}>
+                {#if sc}
+                  {#each chainNodes as n}
+                    <div class="tick" class:cur={n.id === currentId}
+                      style="top:{(100 * (n.scroll!.y ?? 0)) / sc.content}%"></div>
+                  {/each}
+                  <div class="thumb" class:dragging
+                    style="top:{(100 * sc.y) / sc.content}%; height:{Math.max(7, (100 * sc.viewport) / sc.content)}%"
+                    onpointerdown={startDrag} role="slider" tabindex="0"
+                    aria-valuenow={sc.y} aria-valuemax={sc.content} aria-label="scroll position"></div>
+                {/if}
+              </div>
+            {:else}
+              <!-- v2: native scroll of the tall stitched page -->
+              <button class="scroll-btn" disabled={!canUp} onclick={() => pageBy(-1)}
+                title="scroll up" aria-label="scroll up">▲</button>
+              <div class="track" class:on={scrollable} bind:this={trackEl} role="presentation"
+                onpointerdown={(e) => scrollable && nTrackTo(e.clientY)}
+                title={scrollable ? `${Math.round(scrollTop)} / ${Math.round(scrollH - clientH)}px` : 'fits on screen'}>
+                {#if scrollable}
+                  <div class="thumb" class:dragging={nDragging}
+                    style="top:{(100 * scrollTop) / scrollH}%; height:{Math.max(7, (100 * clientH) / scrollH)}%"
+                    onpointerdown={nThumbDown} role="slider" tabindex="0"
+                    aria-valuenow={Math.round(scrollTop)} aria-valuemax={Math.round(scrollH - clientH)}
+                    aria-label="scroll position"></div>
+                {/if}
+              </div>
+            {/if}
+            {#if hasChain}
+              <button class="scroll-btn" disabled={!scrollDown}
+                onclick={() => scrollDown && navigate(scrollDown)} title="scroll down" aria-label="scroll down">▼</button>
+            {:else}
+              <button class="scroll-btn" disabled={!canDown} onclick={() => pageBy(1)}
+                title="scroll down" aria-label="scroll down">▼</button>
+            {/if}
           </div>
         </div><!-- /phone-row -->
 
@@ -396,7 +492,14 @@
   header { display: flex; align-items: center; gap: 16px; }
   h1 { font-size: 16px; margin: 0; color: #9aa4b2; letter-spacing: .04em; }
   .pick { background: #2a6ef0; color: #fff; padding: 6px 12px; border-radius: 8px; cursor: pointer; }
-  .toggle { color: #9aa4b2; margin-left: auto; user-select: none; }
+  .navlink { color: #6b7280; text-decoration: none; font-size: 13px; }
+  .navlink:hover { color: #cbd2dc; }
+  .viewtabs { display: flex; gap: 2px; background: #14171d; border: 1px solid #20242c;
+    border-radius: 8px; padding: 2px; margin-left: auto; }
+  .viewtabs button { background: none; border: 0; color: #9aa4b2; padding: 5px 12px;
+    border-radius: 6px; cursor: pointer; font-size: 13px; }
+  .viewtabs button.on { background: #2a6ef0; color: #fff; }
+  .toggle { color: #9aa4b2; user-select: none; }
   .error { color: #ff7a7a; }
   .dropzone { margin-top: 18vh; text-align: center; color: #6b7280; border: 1.5px dashed #2a2e37; border-radius: 14px; padding: 60px; }
   code { background: #1a1d23; padding: 1px 6px; border-radius: 5px; }
@@ -432,7 +535,19 @@
   .tick { position: absolute; left: 50%; transform: translateX(-50%); width: 4px; height: 4px; border-radius: 50%; background: #4a5160; }
   .tick.cur { background: #fff; }
 
-  .phone { position: relative; border-radius: 22px; overflow: hidden; box-shadow: 0 12px 40px rgba(0,0,0,.5); line-height: 0; }
+  /* the phone box is a fixed one-viewport window; a tall stitched page scrolls
+     inside it natively. Native scrollbar hidden — the custom track drives it. */
+  .phone { position: relative; border-radius: 22px; overflow: auto; aspect-ratio: var(--ar);
+    box-shadow: 0 12px 40px rgba(0,0,0,.5); line-height: 0;
+    scrollbar-width: none; -ms-overflow-style: none; }
+  .phone::-webkit-scrollbar { display: none; }
+  .content { position: relative; line-height: 0; }
+  /* pinned skinny app bar: sticky at the scroll-viewport top, zero-height so it
+     overlays the content (doesn't push it down); its img overflows downward.
+     opacity is set inline from scroll position for the fat->skinny crossfade. */
+  .pinhead { position: sticky; top: 0; height: 0; z-index: 5; overflow: visible;
+    pointer-events: none; }  /* decorative — never intercept hotspot clicks */
+  .pinhead img { width: 100%; display: block; }
   .phone img { width: 100%; display: block; }
   .overlay { position: absolute; inset: 0; font-size: 0; }
   .box { position: absolute; outline: 1px solid rgba(120,180,255,.18); }

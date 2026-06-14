@@ -17,7 +17,14 @@ Assets are named by the lowercase hex SHA-256 of their bytes. This deduplicates
 identical content (revisit a screen → one blob) and makes the file self-verifying.
 `manifest.json` references each asset by its relative path, e.g. `assets/<sha>.png`.
 
-## `manifest.json` (formatVersion 1)
+## `manifest.json` (formatVersion 2)
+
+> **v2** — a node's `screenshot` may be a **stitched full-page image** (taller than
+> one viewport), produced by `droidshot crawl` scrolling the screen and gluing the
+> revealed slivers together. Such nodes carry a `viewport` (the single-viewport
+> size) and a `longshot` object (stitch metadata). Single-viewport screens have
+> `longshot: null` and a plain screenshot. Readers must scale overlays by the
+> stitched image's own dimensions, not by `device.display`.
 
 ```jsonc
 {
@@ -40,10 +47,18 @@ identical content (revisit a screen → one blob) and makes the file self-verify
   "nodes": [                          // captured screen states
     {
       "id": "n0",                     // unique within the file
-      "screenshot": "assets/<sha>.png",
-      "hierarchy":  "assets/<sha>.xml",   // nullable
+      "screenshot": "assets/<sha>.png",   // one viewport, OR a tall stitched page (see longshot)
+      "hierarchy":  "assets/<sha>.xml",   // nullable; captured at the TOP viewport only
       "hierarchySource": "uiautomator",   // "uiautomator" (rich, has text) |
                                           // "viewtree" (dumpsys fallback, no text) | null
+      "viewport":   [1080, 2410],         // v2: single-viewport size in device px
+      "longshot": {                       // v2: stitch metadata; null if not stitched
+        "viewport":     [1080, 2410],
+        "topChrome":    319,              // px of fixed top chrome kept once
+        "bottomChrome": 63,               // px of fixed bottom chrome kept once
+        "stitchedSize": [1080, 5195],     // [w, h] of the stitched screenshot
+        "seams": [ { "frame": 0, "y": 319, "h": 1748 } ]  // join offsets in stitched px
+      },
       "activity":   "com.android.settings/.homepage.SettingsHomepageActivity",
       "capturedAt": "2026-06-13T04:47:00+00:00"
     }
